@@ -20,12 +20,21 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     }, (newTab) => {
       // タブが完全に読み込まれるまで待つ
       chrome.tabs.onUpdated.addListener(function listener(tabId, changeInfo) {
+        // loading状態になったら即座にlocalStorageを書き込む
+        if (tabId === newTab.id && changeInfo.status === 'loading') {
+          chrome.scripting.executeScript({
+            target: { tabId: newTab.id },
+            func: setLocalStorage,
+            args: [info.selectionText]
+          });
+        }
+
         if (tabId === newTab.id && changeInfo.status === 'complete') {
-          // ページ読み込み完了後、少し待ってからスクリプトを実行
+          // ページ読み込み完了後、DOMでも書き換え
           setTimeout(() => {
             chrome.scripting.executeScript({
               target: { tabId: newTab.id },
-              func: injectText,
+              func: injectTextToDOM,
               args: [info.selectionText]
             });
           }, 1000);
@@ -38,19 +47,90 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
-// Claude.aiのページに注入する関数
-function injectText(text) {
-  // 複数の試行方法で入力欄を探す
+// localStorageに書き込む関数（ページ読み込み前に実行）
+function setLocalStorage(text) {
+  const storageKey = 'LSS-new-conversation:textInput';
+  const existing = localStorage.getItem(storageKey);
+
+  let storageValue;
+  let parsed = null;
+  let parseError = false;
+
+  if (existing) {
+    parsed = JSON.parse(existing);
+  }
+
+  if (parseError || !parsed) {
+    // パースエラーまたはエントリーが存在しない場合は新規作成
+    storageValue = {
+      value: {
+        type: "doc",
+        content: [{
+          type: "paragraph",
+          content: [{
+            type: "text",
+            text: text
+          }]
+        }]
+      },
+      tabId: crypto.randomUUID(),
+      timestamp: Date.now()
+    };
+  } else {
+    // 必要なキーがすべて存在するか検証
+    const isValid = parsed &&
+                    typeof parsed === 'object' &&
+                    parsed.value &&
+                    parsed.value.type === 'doc' &&
+                    Array.isArray(parsed.value.content) &&
+                    typeof parsed.tabId === 'string' &&
+                    typeof parsed.timestamp === 'number';
+
+    if (isValid) {
+      // 形式が正しければcontentだけ書き換え
+      storageValue = parsed;
+      storageValue.value.content = [{
+        type: "paragraph",
+        content: [{
+          type: "text",
+          text: text
+        }]
+      }];
+      storageValue.timestamp = Date.now();
+    } else {
+      // 形式が不正なら新規作成
+      storageValue = {
+        value: {
+          type: "doc",
+          content: [{
+            type: "paragraph",
+            content: [{
+              type: "text",
+              text: text
+            }]
+          }]
+        },
+        tabId: crypto.randomUUID(),
+        timestamp: Date.now()
+      };
+    }
+  }
+
+  localStorage.setItem(storageKey, JSON.stringify(storageValue));
+}
+
+// DOMに直接書き込む関数（フォールバック）
+function injectTextToDOM(text) {
   function findAndFillInput() {
-    // 方法1: contenteditable要素を探す
+    // contenteditable要素を探す
     let inputElement = document.querySelector('[contenteditable="true"][role="textbox"]');
 
-    // 方法2: ProseMirrorクラスを探す
+    // ProseMirrorクラスを探す
     if (!inputElement) {
       inputElement = document.querySelector('.ProseMirror');
     }
 
-    // 方法3: aria-labelでClaudeの入力欄を探す
+    // aria-labelでClaudeの入力欄を探す
     if (!inputElement) {
       inputElement = document.querySelector('[aria-label*="クロード"], [aria-label*="Claude"], [aria-label*="prompt"]');
     }
@@ -58,15 +138,13 @@ function injectText(text) {
     if (inputElement) {
       // テキストを挿入
       if (inputElement.querySelector('p')) {
-        // 既存のp要素がある場合
         const p = inputElement.querySelector('p');
         p.textContent = text;
       } else {
-        // p要素を作成して挿入
         inputElement.innerHTML = `<p>${text}</p>`;
       }
 
-      // 入力イベントを発火（Claudeに変更を認識させる）
+      // 入力イベントを発火
       inputElement.dispatchEvent(new Event('input', { bubbles: true }));
       inputElement.dispatchEvent(new Event('change', { bubbles: true }));
 
@@ -83,15 +161,14 @@ function injectText(text) {
         selection.addRange(range);
       }
 
-      console.log('テキストを挿入しました:', text);
+      console.log('DOMにテキストを挿入しました:', text);
       return true;
     }
     return false;
   }
 
-  // 最初の試行
+  // DOMでの挿入を試行
   if (!findAndFillInput()) {
-    // 失敗した場合、少し待ってリトライ
     let retries = 0;
     const retryInterval = setInterval(() => {
       if (findAndFillInput() || retries >= 10) {
