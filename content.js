@@ -9,38 +9,27 @@ function isCaretOnFirstLine(editor) {
   if (!editor.contains(range.startContainer)) return false;
   if ((editor.textContent || "").length === 0) return true;
 
-  // Caret rect: collapsed range だと getClientRects() が空になりやすいので
-  // getBoundingClientRect を主、getClientRects[0] をフォールバックにする
-  let caretTop = null;
-  const cbr = range.getBoundingClientRect();
-  if (cbr.height) caretTop = cbr.top;
-  if (caretTop === null) {
-    const rects = range.getClientRects();
-    if (rects.length) caretTop = rects[0].top;
-  }
-  if (caretTop === null) return true;
+  const caretRect = range.getBoundingClientRect();
+  // rect が取れない＝判定不能なら native 動作に委ねる（誤 block の方が UX 悪い）
+  if (!caretRect.height) return false;
 
-  // 先頭行の top は「editor 内で最初に出てくる実テキストノード」を基準にする。
-  // editor の offset 0 に collapsed range を置く方式は ProseMirror 内で
-  // rect が取れず、padding-top フォールバックに落ちて段落マージン分ズレる。
-  let firstTop = null;
-  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-  let node;
-  while ((node = walker.nextNode())) {
-    if (!node.length) continue;
-    const probe = document.createRange();
-    probe.setStart(node, 0);
-    probe.setEnd(node, 1);
-    const r = probe.getBoundingClientRect();
-    if (r.height) { firstTop = r.top; break; }
-  }
-  if (firstTop === null) {
-    const box = editor.getBoundingClientRect();
-    firstTop = box.top + parseFloat(getComputedStyle(editor).paddingTop || "0");
-  }
-
+  // キャレットの半行上に caret position を問い合わせる。
+  // 解決した位置が editor 内かつ視覚的に上にあるなら「前の行がある」→ 1行目ではない。
   const lh = parseFloat(getComputedStyle(editor).lineHeight) || 20;
-  return (caretTop - firstTop) < lh * 0.5;
+  const above = caretRangeAtPoint(caretRect.left, caretRect.top - lh * 0.5);
+  if (!above || !editor.contains(above.startContainer)) return true;
+
+  const aboveRect = above.getBoundingClientRect();
+  return !(aboveRect.top < caretRect.top - 2);
+}
+
+function caretRangeAtPoint(x, y) {
+  const pos = document.caretPositionFromPoint?.(x, y);
+  if (!pos) return null;
+  const r = document.createRange();
+  r.setStart(pos.offsetNode, pos.offset);
+  r.collapse(true);
+  return r;
 }
 
 function handleArrowUp(event) {
