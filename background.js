@@ -8,10 +8,52 @@ chrome.runtime.onInstalled.addListener(() => {
     title: "Ask Claude: '%s'",
     contexts: ["selection"]
   });
+
+  // 何もないところで右クリックした時のサブメニュー
+  chrome.contextMenus.create({
+    id: "copyMenu",
+    title: "コピー",
+    contexts: ["page"]
+  });
+
+  chrome.contextMenus.create({
+    id: "copyTitle",
+    parentId: "copyMenu",
+    title: "タイトルをコピー",
+    contexts: ["page"]
+  });
+
+  chrome.contextMenus.create({
+    id: "copyMarkdown",
+    parentId: "copyMenu",
+    title: "Markdownでコピー",
+    contexts: ["page"]
+  });
+
+  chrome.contextMenus.create({
+    id: "copyAmazonShortUrl",
+    parentId: "copyMenu",
+    title: "Amazonの短縮URLをコピー",
+    contexts: ["page"],
+    // Amazonのときだけ有効化
+    documentUrlPatterns: ["*://*.amazon.co.jp/*"]
+  });
 });
+
+// コピー系メニューの処理
+const copyMenuIds = ["copyTitle", "copyMarkdown", "copyAmazonShortUrl"];
 
 // メニューがクリックされた時の処理
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (copyMenuIds.includes(info.menuItemId) && tab && tab.id != null) {
+    chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: copyToClipboard,
+      args: [info.menuItemId]
+    });
+    return;
+  }
+
   if (info.menuItemId === "askClaude" && info.selectionText) {
     // Claudeのタブを作成
     chrome.tabs.create({
@@ -46,6 +88,51 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     });
   }
 });
+
+// クリップボードにコピーする関数（ページコンテキストで実行）
+function copyToClipboard(menuItemId) {
+  function writeText(text) {
+    // textarea + execCommand（注入スクリプトで確実に動く方法）
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.top = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    try {
+      document.execCommand('copy');
+    } catch (e) {
+      // フォールバック
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(text);
+      }
+    }
+    document.body.removeChild(textarea);
+  }
+
+  let text = null;
+
+  if (menuItemId === 'copyTitle') {
+    text = document.title;
+  } else if (menuItemId === 'copyMarkdown') {
+    text = `[${document.title}](${location.href})`;
+  } else if (menuItemId === 'copyAmazonShortUrl') {
+    // /dp/ASIN, /gp/product/ASIN などからASINを抽出
+    const match = location.pathname.match(/\/(?:dp|gp\/product|gp\/aw\/d)\/([A-Z0-9]{10})/i);
+    if (match) {
+      text = `https://www.amazon.co.jp/dp/${match[1]}`;
+    } else {
+      console.warn('ASINが見つかりませんでした:', location.href);
+      return;
+    }
+  }
+
+  if (text != null) {
+    writeText(text);
+    console.log('クリップボードにコピーしました:', text);
+  }
+}
 
 // localStorageに書き込む関数（ページ読み込み前に実行）
 function setLocalStorage(text) {
